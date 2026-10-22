@@ -39,7 +39,7 @@ function render(auth) {
   const message = errorMessage(auth.error);
 
   const input = el('input', {
-    type: 'text',
+    type: 'password',
     name: 'pin',
     inputmode: 'numeric',
     autocomplete: 'off',

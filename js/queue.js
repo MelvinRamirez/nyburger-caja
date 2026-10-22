@@ -26,6 +26,89 @@ export function visibleOrders(orders, pending) {
   return orders.filter((order) => !hidden.has(order.order_id));
 }
 
+function tableSortKey(tableNumber) {
+  const n = Number(tableNumber);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Compares two table numbers ascending: numerically when both parse as
+ * finite numbers, falling back to a locale-aware alphabetical compare
+ * otherwise (mixed numeric/non-numeric table identifiers).
+ *
+ * @param {string} a
+ * @param {string} b
+ * @returns {number}
+ */
+function compareTables(a, b) {
+  const na = tableSortKey(a);
+  const nb = tableSortKey(b);
+  if (na !== null && nb !== null) return na - nb;
+  return a.localeCompare(b);
+}
+
+/**
+ * Distinct `table_number` values among `orders`, ascending (numeric when
+ * possible, alphabetical otherwise). Used to drive the per-table filter
+ * buttons, which must only show tables with currently visible orders.
+ *
+ * @param {object[]} orders usually the result of `visibleOrders`.
+ * @returns {string[]}
+ */
+export function activeTables(orders) {
+  const seen = new Set();
+  for (const order of orders) {
+    seen.add(String(order.table_number));
+  }
+  return [...seen].sort(compareTables);
+}
+
+/**
+ * Groups `orders` by `table_number`, with groups ordered ascending (same
+ * rule as `activeTables`) and orders preserved in their original relative
+ * (FIFO) order within each group. Does not touch `orders` itself.
+ *
+ * @param {object[]} orders usually the result of `visibleOrders`.
+ * @returns {object[]} a new array, grouped by table, FIFO within each group.
+ */
+export function groupOrdersByTable(orders) {
+  const byTable = new Map();
+  for (const order of orders) {
+    const table = String(order.table_number);
+    if (!byTable.has(table)) byTable.set(table, []);
+    byTable.get(table).push(order);
+  }
+  const tables = [...byTable.keys()].sort(compareTables);
+  return tables.flatMap((table) => byTable.get(table));
+}
+
+/**
+ * Sums `total_amount` across the already-filtered orders for one table (the
+ * same list rendered as cards when a table filter is active). An order
+ * whose `total_amount` isn't a finite number — the same `toCardModel` null
+ * case, when `order_details` is malformed and a summary fallback is used
+ * instead — is excluded from the sum and flips `isComplete` to false, so
+ * the caller can flag the total as possibly incomplete rather than
+ * presenting it as exact.
+ *
+ * @param {object[]} orders orders for a single table, usually
+ *   `visible.filter((order) => String(order.table_number) === selectedTable)`.
+ * @returns {{ total: number, isComplete: boolean }}
+ */
+export function tableTotal(orders) {
+  let total = 0;
+  let isComplete = true;
+  for (const order of orders) {
+    const amount = toFiniteNumber(order.total_amount);
+    if (amount === null) {
+      isComplete = false;
+      continue;
+    }
+    total += amount;
+  }
+  return { total, isComplete };
+}
+
 function isWellFormedItem(item) {
   return (
     item !== null &&

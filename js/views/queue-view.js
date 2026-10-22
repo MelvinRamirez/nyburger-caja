@@ -1,5 +1,5 @@
 import { messages } from '../messages.js';
-import { visibleOrders, toCardModel } from '../queue.js';
+import { visibleOrders, toCardModel, activeTables, groupOrdersByTable, tableTotal } from '../queue.js';
 import { select } from '../store.js';
 import { el } from './dom.js';
 import { createCardNode, updateCardNode } from './order-card-view.js';
@@ -55,12 +55,65 @@ function ribbonText(sync) {
 export function mountQueueView(root, store, handlers) {
   /** @type {Map<string, HTMLElement>} */
   const cardNodes = new Map();
+  // Ephemeral UI-only state (which table button is active): not part of the
+  // domain store, never persisted, reset on remount — same posture as not
+  // having a dedicated reducer for it.
+  let selectedTable = null;
+
+  function buildFilterRow(tables) {
+    const row = el('div', { class: 'queue-view__filters flex flex-wrap gap-2', role: 'group' });
+
+    const buttonClass = (active) =>
+      `queue-view__filter-button min-h-11 rounded-full px-4 py-2 text-sm font-bold ${
+        active ? 'bg-emerald-700 text-white' : 'bg-slate-200 text-slate-700'
+      }`;
+
+    row.appendChild(
+      el(
+        'button',
+        {
+          type: 'button',
+          class: buttonClass(selectedTable === null),
+          'data-action': 'filter-table',
+          'data-table': '',
+        },
+        [messages.queue.allTables],
+      ),
+    );
+
+    for (const table of tables) {
+      row.appendChild(
+        el(
+          'button',
+          {
+            type: 'button',
+            class: buttonClass(selectedTable === table),
+            'data-action': 'filter-table',
+            'data-table': table,
+          },
+          [messages.queue.tableButton(table)],
+        ),
+      );
+    }
+
+    return row;
+  }
 
   function renderNow() {
     const state = store.getState();
     const nowMs = Date.now();
     const visible = visibleOrders(state.queue.orders, state.payment.pending);
-    const cardModels = visible.map((order) => toCardModel(order));
+    const tables = activeTables(visible);
+
+    if (selectedTable !== null && !tables.includes(selectedTable)) {
+      selectedTable = null;
+    }
+
+    const ordered = selectedTable === null
+      ? groupOrdersByTable(visible)
+      : visible.filter((order) => String(order.table_number) === selectedTable);
+
+    const cardModels = ordered.map((order) => toCardModel(order));
     const visibleIds = new Set(cardModels.map((m) => m.id));
 
     for (const [id, node] of cardNodes) {
@@ -96,6 +149,30 @@ export function mountQueueView(root, store, handlers) {
       return;
     }
 
+    if (tables.length > 0) {
+      root.appendChild(buildFilterRow(tables));
+    }
+
+    if (selectedTable !== null) {
+      const { total, isComplete } = tableTotal(ordered);
+      root.appendChild(
+        el(
+          'p',
+          { class: 'queue-view__table-total text-lg font-bold text-slate-900', role: 'status' },
+          [messages.queue.tableTotal(total)],
+        ),
+      );
+      if (!isComplete) {
+        root.appendChild(
+          el(
+            'p',
+            { class: 'queue-view__table-total-warning text-xs font-semibold text-amber-700', role: 'status' },
+            [messages.queue.tableTotalIncomplete],
+          ),
+        );
+      }
+    }
+
     const grid = el('div', {
       class: 'queue-view__grid grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4',
     });
@@ -114,10 +191,19 @@ export function mountQueueView(root, store, handlers) {
   }
 
   function dispatchFromEvent(event) {
-    const target = event.target.closest ? event.target.closest('[data-action="pay"]') : null;
-    if (!target || !root.contains(target)) return;
-    const orderId = target.dataset.orderId;
-    if (orderId) handlers.onMarkPaid(orderId);
+    const payTarget = event.target.closest ? event.target.closest('[data-action="pay"]') : null;
+    if (payTarget && root.contains(payTarget)) {
+      const orderId = payTarget.dataset.orderId;
+      if (orderId) handlers.onMarkPaid(orderId);
+      return;
+    }
+
+    const filterTarget = event.target.closest ? event.target.closest('[data-action="filter-table"]') : null;
+    if (filterTarget && root.contains(filterTarget)) {
+      const table = filterTarget.dataset.table;
+      selectedTable = table === '' ? null : table;
+      renderNow();
+    }
   }
 
   renderNow();

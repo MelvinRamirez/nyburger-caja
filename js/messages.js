@@ -25,6 +25,15 @@ export const messages = {
     emptyQueueOk: 'No hay pedidos pendientes de pago',
     emptyQueueStale: 'Sin conexión: no se puede confirmar si hay pedidos pendientes de pago',
   },
+  queue: {
+    allTables: 'Todas',
+    tableButton: (table) => `Mesa ${table}`,
+    tableTotal: (total) => `Total mesa: ${total.toFixed(2)}`,
+    // Shown when tableTotal(orders).isComplete is false (same posture as
+    // close.confirmSummaryUnavailable: flag the total rather than present
+    // it as exact).
+    tableTotalIncomplete: 'Algunos pedidos no tienen importe cargado: el total puede ser parcial.',
+  },
   payment: {
     payButton: 'Pagada',
     // Mark-Pagada Recovery Policy outcomes, ver caja-payment-queue spec.
