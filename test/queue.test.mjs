@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { hiddenIds, visibleOrders, toCardModel } from '../js/queue.js';
+import { hiddenIds, visibleOrders, toCardModel, activeTables, groupOrdersByTable, tableTotal } from '../js/queue.js';
 
 function order(overrides = {}) {
   return {
@@ -56,6 +56,81 @@ test('visibleOrders: a confirmed-but-not-yet-purged pending entry still hides th
   const orders = [order({ order_id: 'A' })];
   const pending = [{ order_id: 'A', confirmedAtSeq: 5 }];
   assert.deepStrictEqual(visibleOrders(orders, pending), []);
+});
+
+// --- activeTables ---
+
+test('activeTables: distinct table_number values, ascending numerically', () => {
+  const orders = [
+    order({ order_id: 'A', table_number: '10' }),
+    order({ order_id: 'B', table_number: '2' }),
+    order({ order_id: 'C', table_number: '10' }),
+    order({ order_id: 'D', table_number: '5' }),
+  ];
+  assert.deepStrictEqual(activeTables(orders), ['2', '5', '10']);
+});
+
+test('activeTables: empty orders yields empty list', () => {
+  assert.deepStrictEqual(activeTables([]), []);
+});
+
+test('activeTables: falls back to alphabetical compare for non-numeric table identifiers', () => {
+  const orders = [order({ order_id: 'A', table_number: 'B1' }), order({ order_id: 'B', table_number: 'A1' })];
+  assert.deepStrictEqual(activeTables(orders), ['A1', 'B1']);
+});
+
+// --- groupOrdersByTable ---
+
+test('groupOrdersByTable: groups by table_number, groups ascending, FIFO preserved within a group', () => {
+  const orders = [
+    order({ order_id: 'A', table_number: '5' }),
+    order({ order_id: 'B', table_number: '2' }),
+    order({ order_id: 'C', table_number: '5' }),
+    order({ order_id: 'D', table_number: '2' }),
+  ];
+  const result = groupOrdersByTable(orders);
+  assert.deepStrictEqual(
+    result.map((o) => o.order_id),
+    ['B', 'D', 'A', 'C'],
+  );
+});
+
+test('groupOrdersByTable: does not mutate the input array', () => {
+  const orders = [order({ order_id: 'A', table_number: '5' }), order({ order_id: 'B', table_number: '2' })];
+  const copy = [...orders];
+  groupOrdersByTable(orders);
+  assert.deepStrictEqual(orders, copy);
+});
+
+test('groupOrdersByTable: empty orders yields empty list', () => {
+  assert.deepStrictEqual(groupOrdersByTable([]), []);
+});
+
+// --- tableTotal ---
+
+test('tableTotal: sums total_amount across orders and reports complete', () => {
+  const orders = [
+    order({ order_id: 'A', total_amount: 100 }),
+    order({ order_id: 'B', total_amount: 50.5 }),
+  ];
+  assert.deepStrictEqual(tableTotal(orders), { total: 150.5, isComplete: true });
+});
+
+test('tableTotal: empty orders yields a zero complete total', () => {
+  assert.deepStrictEqual(tableTotal([]), { total: 0, isComplete: true });
+});
+
+test('tableTotal: excludes an order with a non-finite total_amount and flags incomplete', () => {
+  const orders = [
+    order({ order_id: 'A', total_amount: 100 }),
+    order({ order_id: 'B', total_amount: 'not-a-number' }),
+  ];
+  assert.deepStrictEqual(tableTotal(orders), { total: 100, isComplete: false });
+});
+
+test('tableTotal: a numeric string total_amount is parsed and included', () => {
+  const orders = [order({ order_id: 'A', total_amount: '75.25' })];
+  assert.deepStrictEqual(tableTotal(orders), { total: 75.25, isComplete: true });
 });
 
 // --- toCardModel: Payment Card Content ---

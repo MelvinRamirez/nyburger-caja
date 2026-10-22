@@ -9,7 +9,7 @@
 // method/origin, never on request duration).
 
 const CACHE_PREFIX = 'foodc-caja-shell-';
-const CACHE_VERSION = 'foodc-caja-shell-v2'; // bump in the same commit as any shell file change
+const CACHE_VERSION = 'foodc-caja-shell-v3'; // bump in the same commit as any shell file change
 
 const PRECACHE = [
   './',
