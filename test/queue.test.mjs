@@ -252,3 +252,15 @@ test('toCardModel: non-numeric total_amount yields totalAmount null', () => {
   const model = toCardModel(order({ total_amount: 'not-a-number' }));
   assert.equal(model.totalAmount, null);
 });
+
+// --- toCardModel: paymentStatus/kitchenStatus passthrough (caja-order-prepay) ---
+
+test('toCardModel: carries payment_status as paymentStatus (plain passthrough)', () => {
+  assert.equal(toCardModel(order({ payment_status: 'Pendiente' })).paymentStatus, 'Pendiente');
+  assert.equal(toCardModel(order({ payment_status: 'Pagada' })).paymentStatus, 'Pagada');
+});
+
+test('toCardModel: carries status as kitchenStatus (plain passthrough)', () => {
+  assert.equal(toCardModel(order({ status: 'Pendiente' })).kitchenStatus, 'Pendiente');
+  assert.equal(toCardModel(order({ status: 'Completado' })).kitchenStatus, 'Completado');
+});

@@ -9,27 +9,37 @@ import { el } from './dom.js';
  * @returns {string} '--' when `n` is not a finite number.
  */
 function formatTotal(n) {
-  return typeof n === 'number' && Number.isFinite(n) ? n.toFixed(2) : '--';
+  // Lempira hondureña (HNL), misma convención que foodc-cliente's CURRENCY_SYMBOL.
+  return typeof n === 'number' && Number.isFinite(n) ? 'L' + n.toFixed(2) : '--';
 }
 
 /**
- * Reduces a `getCajaOrders(status:"Pagada")` ApiResult into the count/total
- * preview shown on the "¿Seguro?" step. Returns `null` on anything other
- * than a clean success (definitive error, ambiguous/network failure) — the
- * caller falls back to `messages.close.confirmSummaryUnavailable` rather
- * than blocking the close on this preview-only read.
+ * Reduces a `getCajaOrders(payment_status:"Pagada")` ApiResult into the
+ * count/total preview shown on the "¿Seguro?" step. Returns `null` on
+ * anything other than a clean success (definitive error, ambiguous/network
+ * failure) — the caller falls back to `messages.close.confirmSummaryUnavailable`
+ * rather than blocking the close on this preview-only read.
+ *
+ * Filters to `order.status === 'Completado'` before counting/summing
+ * (`caja-order-prepay`): since payment and kitchen status are now
+ * independent, a `Pagada` order whose kitchen status is still `Pendiente`
+ * is prepaid but not yet archivable — the backend's close guard requires
+ * BOTH `payment_status === 'Pagada'` AND `status === 'Completado'`. Without
+ * this filter the preview would overcount what the close is about to
+ * archive.
  *
  * @param {import('../api.js').ApiResult} apiResult
  * @returns {{ count: number, total: number }|null}
  */
 export function summarizePagadaPreview(apiResult) {
   if (!apiResult || apiResult.kind !== 'success' || !Array.isArray(apiResult.data)) return null;
+  const archivable = apiResult.data.filter((order) => order.status === 'Completado');
   let total = 0;
-  for (const order of apiResult.data) {
+  for (const order of archivable) {
     const amount = typeof order.total_amount === 'number' ? order.total_amount : Number(order.total_amount);
     if (Number.isFinite(amount)) total += amount;
   }
-  return { count: apiResult.data.length, total };
+  return { count: archivable.length, total };
 }
 
 function renderPinStep(close) {

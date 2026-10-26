@@ -10,7 +10,8 @@ const BASE_CARD_CLASS =
  * @returns {string} `'--'` when the amount is missing/non-finite.
  */
 function formatTotal(totalAmount) {
-  return typeof totalAmount === 'number' && Number.isFinite(totalAmount) ? totalAmount.toFixed(2) : '--';
+  // Lempira hondureña (HNL), misma convención que foodc-cliente's CURRENCY_SYMBOL.
+  return typeof totalAmount === 'number' && Number.isFinite(totalAmount) ? 'L' + totalAmount.toFixed(2) : '--';
 }
 
 function renderItems(cardModel) {
@@ -41,6 +42,78 @@ function renderNotes(cardModel) {
 }
 
 /**
+ * `caja-order-prepay` scope item 4: a small paid badge shown on an
+ * already-paid card INSTEAD of the pay button. `null` when the order is
+ * still unpaid (`paymentStatus !== 'Pagada'`), same add/replace/remove
+ * pattern as `renderNotes`.
+ *
+ * @param {{ paymentStatus?: string|null }} cardModel
+ * @returns {HTMLElement|null}
+ */
+function renderPaidBadge(cardModel) {
+  if (cardModel.paymentStatus !== 'Pagada') return null;
+  return el(
+    'p',
+    {
+      class: 'order-card__paid-badge rounded-lg bg-emerald-100 px-2 py-1 text-2xl font-semibold text-emerald-900',
+      'data-role': 'paid-badge',
+    },
+    [messages.payment.paidBadge],
+  );
+}
+
+/**
+ * `caja-order-prepay` scope item 4: the kitchen-status indicator shown next
+ * to the table number/timer on an already-paid card ("En cocina" /
+ * "Lista"). `null` when the order is still unpaid, so an unpaid card's
+ * header renders exactly as today.
+ *
+ * @param {{ paymentStatus?: string|null, kitchenStatus?: string|null }} cardModel
+ * @returns {HTMLElement|null}
+ */
+function renderKitchenStatus(cardModel) {
+  if (cardModel.paymentStatus !== 'Pagada') return null;
+  const isDone = cardModel.kitchenStatus === 'Completado';
+  const text = isDone ? messages.kitchenStatus.done : messages.kitchenStatus.pending;
+  // "En cocina" (still pending) gets a red background/white text so it
+  // stands out from "Lista", which keeps the neutral slate styling.
+  const colorClass = isDone ? 'bg-slate-100 text-slate-700' : 'bg-red-600 text-white';
+  return el(
+    'span',
+    {
+      class: `order-card__kitchen-status rounded-lg px-2 py-1 text-xs font-semibold ${colorClass}`,
+      'data-role': 'kitchen-status',
+    },
+    [text],
+  );
+}
+
+/**
+ * The "Pagada" pay button, shown on an unpaid card
+ * (`cardModel.paymentStatus !== 'Pagada'`). Factored out of
+ * `createCardNode` so `updateCardNode` can rebuild the same node when a
+ * reused card transitions back to unpaid (never actually happens today,
+ * but mirrors the symmetric badge-removal path rather than assuming it
+ * can't).
+ *
+ * @param {{ id: string }} cardModel
+ * @returns {HTMLElement}
+ */
+function renderPayButton(cardModel) {
+  return el(
+    'button',
+    {
+      type: 'button',
+      class:
+        'order-card__pay min-h-16 w-full rounded-xl bg-emerald-600 font-bold text-lg text-white active:bg-emerald-700',
+      'data-action': 'pay',
+      'data-order-id': cardModel.id,
+    },
+    [messages.payment.payButton],
+  );
+}
+
+/**
  * Builds a new card DOM node from scratch for `cardModel`. Used by
  * `queue-view` the first time a given `order_id` becomes visible; every
  * subsequent poll that still contains the same `order_id` reuses this exact
@@ -49,12 +122,14 @@ function renderNotes(cardModel) {
  *
  * @param {{ id: string, table: string, updatedAtMs: number|null,
  *   items: {name: string, quantity: number}[]|null, summaryText: string|null,
- *   notes: string|null, totalAmount: number|null }} cardModel
+ *   notes: string|null, totalAmount: number|null, paymentStatus: string|null,
+ *   kitchenStatus: string|null }} cardModel
  * @param {number} nowMs
  * @returns {HTMLElement}
  */
 export function createCardNode(cardModel, nowMs) {
   const elapsed = elapsedMs(cardModel.updatedAtMs, nowMs);
+  const isPaid = cardModel.paymentStatus === 'Pagada';
 
   return el(
     'article',
@@ -67,23 +142,17 @@ export function createCardNode(cardModel, nowMs) {
         el('span', { class: 'order-card__timer text-sm font-mono text-slate-500', 'data-role': 'timer' }, [
           formatElapsed(elapsed),
         ]),
+        renderKitchenStatus(cardModel),
       ]),
       renderItems(cardModel),
       renderNotes(cardModel),
       el('p', { class: 'order-card__total text-right text-xl font-bold text-slate-900', 'data-role': 'total' }, [
         formatTotal(cardModel.totalAmount),
       ]),
-      el(
-        'button',
-        {
-          type: 'button',
-          class:
-            'order-card__pay min-h-16 w-full rounded-xl bg-emerald-600 font-bold text-lg text-white active:bg-emerald-700',
-          'data-action': 'pay',
-          'data-order-id': cardModel.id,
-        },
-        [messages.payment.payButton],
-      ),
+      // `caja-order-prepay`: an already-paid order shows the paid badge
+      // INSTEAD of the pay button — there is nothing left to do with it
+      // here, the kitchen-status indicator above already covers context.
+      isPaid ? renderPaidBadge(cardModel) : renderPayButton(cardModel),
     ].filter(Boolean),
   );
 }
@@ -115,7 +184,8 @@ export function updateTimer(node, cardModel, nowMs) {
  * @param {HTMLElement} node
  * @param {{ id: string, table: string, updatedAtMs: number|null,
  *   items: {name: string, quantity: number}[]|null, summaryText: string|null,
- *   notes: string|null, totalAmount: number|null }} cardModel
+ *   notes: string|null, totalAmount: number|null, paymentStatus: string|null,
+ *   kitchenStatus: string|null }} cardModel
  * @param {number} nowMs
  */
 export function updateCardNode(node, cardModel, nowMs) {
@@ -139,6 +209,36 @@ export function updateCardNode(node, cardModel, nowMs) {
 
   const totalEl = node.querySelector('[data-role="total"]');
   if (totalEl) totalEl.textContent = formatTotal(cardModel.totalAmount);
+
+  // Kitchen-status indicator (header, next to the timer): same
+  // add/replace/remove pattern as notes above.
+  const kitchenEl = node.querySelector('[data-role="kitchen-status"]');
+  const nextKitchen = renderKitchenStatus(cardModel);
+  if (kitchenEl && nextKitchen) {
+    kitchenEl.replaceWith(nextKitchen);
+  } else if (kitchenEl && !nextKitchen) {
+    kitchenEl.remove();
+  } else if (!kitchenEl && nextKitchen) {
+    const headerEl = node.querySelector('.order-card__header');
+    if (headerEl) headerEl.appendChild(nextKitchen);
+  }
+
+  // Paid badge vs. pay button: mutually exclusive action area, driven by
+  // `cardModel.paymentStatus` (`caja-order-prepay` scope item 4).
+  const badgeEl = node.querySelector('[data-role="paid-badge"]');
+  const payButtonEl = node.querySelector('[data-action="pay"]');
+  if (cardModel.paymentStatus === 'Pagada') {
+    if (payButtonEl) payButtonEl.remove();
+    const nextBadge = renderPaidBadge(cardModel);
+    if (badgeEl) {
+      badgeEl.replaceWith(nextBadge);
+    } else {
+      node.appendChild(nextBadge);
+    }
+  } else {
+    if (badgeEl) badgeEl.remove();
+    if (!payButtonEl) node.appendChild(renderPayButton(cardModel));
+  }
 
   updateTimer(node, cardModel, nowMs);
 }

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { classifyCloseResult, closeActions, IDLE_CLOSE } from '../js/close.js';
+import { summarizePagadaPreview } from '../js/views/close-view.js';
 
 function success(data) {
   return { kind: 'success', data, meta: null };
@@ -148,4 +149,41 @@ test('reset: returns fully to idle after a terminal result, for the retry flow t
   close = closeActions.resultReceived(close, definitive('LOCK_TIMEOUT'));
   const next = closeActions.reset(close);
   assert.deepStrictEqual(next, IDLE_CLOSE);
+});
+
+// --- summarizePagadaPreview (caja-order-prepay T6: filters to kitchen-
+// Completado, matching the backend close guard's BOTH payment_status===
+// Pagada AND status===Completado requirement) ---------------------------
+
+test('summarizePagadaPreview: counts and sums only orders whose kitchen status is Completado', () => {
+  const result = success([
+    { order_id: 'A', status: 'Completado', total_amount: 100 },
+    { order_id: 'B', status: 'Pendiente', total_amount: 50 }, // prepaid, still cooking: not archivable yet
+    { order_id: 'C', status: 'Completado', total_amount: 25.5 },
+  ]);
+  assert.deepStrictEqual(summarizePagadaPreview(result), { count: 2, total: 125.5 });
+});
+
+test('summarizePagadaPreview: all-Pendiente-kitchen orders yield a zero count/total, not null', () => {
+  const result = success([{ order_id: 'A', status: 'Pendiente', total_amount: 100 }]);
+  assert.deepStrictEqual(summarizePagadaPreview(result), { count: 0, total: 0 });
+});
+
+test('summarizePagadaPreview: empty data yields a zero count/total', () => {
+  assert.deepStrictEqual(summarizePagadaPreview(success([])), { count: 0, total: 0 });
+});
+
+test('summarizePagadaPreview: a non-finite total_amount on an archivable order is excluded from the sum', () => {
+  const result = success([
+    { order_id: 'A', status: 'Completado', total_amount: 100 },
+    { order_id: 'B', status: 'Completado', total_amount: 'not-a-number' },
+  ]);
+  assert.deepStrictEqual(summarizePagadaPreview(result), { count: 2, total: 100 });
+});
+
+test('summarizePagadaPreview: returns null on a definitive error, ambiguous failure, or malformed data', () => {
+  assert.equal(summarizePagadaPreview(definitive('SHEET_UNAVAILABLE')), null);
+  assert.equal(summarizePagadaPreview(ambiguous('network')), null);
+  assert.equal(summarizePagadaPreview(success('not-an-array')), null);
+  assert.equal(summarizePagadaPreview(null), null);
 });

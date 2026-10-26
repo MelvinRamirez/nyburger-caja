@@ -94,14 +94,17 @@ function definitive(code, details = null) {
 // `ERR_MODULE_NOT_FOUND: Cannot find module '.../js/effects.js'` running
 // `node --test test/effects.test.mjs`. Now GREEN against the implementation.
 
-test('11.1: polls never overlap; next poll is scheduled POLL_INTERVAL_MS after the slow response settles', async () => {
+test('11.1: polls never overlap; next poll is scheduled POLL_INTERVAL_MS after both concurrent calls settle', async () => {
+  // Each poll tick now fires TWO concurrent getCajaOrders calls (Pendiente +
+  // Pagada, `caja-order-prepay` scope item 2), so this counts raw
+  // getCajaOrders invocations (2 per tick), not ticks.
   let getCajaOrdersCalls = 0;
-  let resolveSlow;
+  let resolvers = [];
   const api = {
     getCajaOrders: () => {
       getCajaOrdersCalls++;
       return new Promise((resolve) => {
-        resolveSlow = resolve;
+        resolvers.push(resolve);
       });
     },
   };
@@ -109,24 +112,105 @@ test('11.1: polls never overlap; next poll is scheduled POLL_INTERVAL_MS after t
 
   const stop = startPolling(ctx);
   assert.equal(typeof stop, 'function');
-  assert.equal(getCajaOrdersCalls, 1, 'first poll fires immediately on start');
+  assert.equal(getCajaOrdersCalls, 2, 'first poll tick fires both concurrent getCajaOrders calls immediately');
 
   timers.advance(POLL_INTERVAL_MS * 3);
-  assert.equal(getCajaOrdersCalls, 1, 'no overlapping poll while the first is in flight');
+  assert.equal(getCajaOrdersCalls, 2, 'no overlapping poll tick while the first is in flight');
 
-  resolveSlow(okOrders([]));
+  resolvers.forEach((resolve) => resolve(okOrders([])));
+  resolvers = [];
   await Promise.resolve();
   await Promise.resolve();
 
-  assert.equal(getCajaOrdersCalls, 1);
+  assert.equal(getCajaOrdersCalls, 2);
 
   timers.advance(POLL_INTERVAL_MS - 1);
-  assert.equal(getCajaOrdersCalls, 1);
+  assert.equal(getCajaOrdersCalls, 2);
 
   timers.advance(1);
-  assert.equal(getCajaOrdersCalls, 2, 'next poll scheduled exactly POLL_INTERVAL_MS after settle');
+  assert.equal(getCajaOrdersCalls, 4, 'next tick (2 more calls) scheduled exactly POLL_INTERVAL_MS after settle');
 
   stop();
+});
+
+// --- caja-order-prepay T2: dual-fetch (Pendiente + Pagada) merged poll ---
+
+test('dual-fetch poll: fetches both Pendiente and Pagada concurrently and merges the two arrays', async () => {
+  const seen = [];
+  const api = {
+    getCajaOrders: (paymentStatus) => {
+      seen.push(paymentStatus);
+      if (paymentStatus === 'Pendiente') return Promise.resolve(okOrders([{ order_id: 'P1' }]));
+      return Promise.resolve(okOrders([{ order_id: 'G1' }]));
+    },
+  };
+  const { ctx, store } = makeCtx({ api });
+
+  startPolling(ctx);
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.deepStrictEqual(seen.sort(), ['Pagada', 'Pendiente'], 'both legs requested exactly once per tick');
+  assert.deepStrictEqual(
+    store.getState().queue.orders.map((o) => o.order_id),
+    ['P1', 'G1'],
+    'pollSucceeded receives the merged array (Pendiente first, then Pagada)',
+  );
+});
+
+test('dual-fetch poll: a tick only succeeds if BOTH legs resolve kind:"success"', async () => {
+  const api = {
+    getCajaOrders: (paymentStatus) => {
+      if (paymentStatus === 'Pendiente') return Promise.resolve(okOrders([{ order_id: 'P1' }]));
+      return Promise.resolve(definitive('SHEET_UNAVAILABLE'));
+    },
+  };
+  const { ctx, store } = makeCtx({ api });
+
+  startPolling(ctx);
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(store.getState().sync.status, 'retrying', 'one failing leg fails the whole tick');
+  assert.equal(store.getState().queue.orders.length, 0, 'queue is not updated from the half-succeeded tick');
+});
+
+test('dual-fetch poll failure tie-break: UNAUTHORIZED on either leg relocks even if the other leg is a contract error', async () => {
+  const api = {
+    getCajaOrders: (paymentStatus) => {
+      if (paymentStatus === 'Pendiente') return Promise.resolve(unauthorized());
+      return Promise.resolve(definitive('VALIDATION_ERROR'));
+    },
+  };
+  const { ctx, store } = makeCtx({ api, pinStorage: makeMemoryStorage() });
+  ctx.pinStorage.setItem('foodc.caja.pin', '123456');
+
+  startPolling(ctx);
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(store.getState().auth.status, 'locked', 'UNAUTHORIZED outranks the other leg\'s contract error');
+  assert.equal(ctx.pinStorage.getItem('foodc.caja.pin'), null);
+});
+
+test('dual-fetch poll failure tie-break: a contract-bug code on either leg outranks a transient/ambiguous failure on the other', async () => {
+  const api = {
+    getCajaOrders: (paymentStatus) => {
+      if (paymentStatus === 'Pendiente') return Promise.resolve({ kind: 'ambiguous', reason: 'network' });
+      return Promise.resolve(definitive('UNKNOWN_ACTION'));
+    },
+  };
+  const { ctx, store } = makeCtx({ api });
+
+  startPolling(ctx);
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(store.getState().sync.status, 'contract', 'the more specific contract-bug code is reported');
 });
 
 test('polling stops entirely while locked', async () => {
@@ -521,14 +605,19 @@ test('payment runner processes entries serially, oldest tap first', async () => 
 // --- pending-markPaid race through effects (payment.js + actions.js + effects.js) ---
 
 test('a poll started before a mark-Pagada confirms does not let the order reappear', async () => {
-  let resolvePoll1;
-  let callCount = 0;
+  // Only the Pendiente leg of the first tick hangs; the Pagada leg (and
+  // every later Pendiente call) resolves immediately with no orders, so the
+  // dual-fetch merge still reduces to the single-leg race this test exists
+  // to cover.
+  let resolvePendiente;
+  let pendienteCallCount = 0;
   const api = {
-    getCajaOrders: () => {
-      callCount++;
-      if (callCount === 1) {
+    getCajaOrders: (paymentStatus) => {
+      if (paymentStatus !== 'Pendiente') return Promise.resolve(okOrders([]));
+      pendienteCallCount++;
+      if (pendienteCallCount === 1) {
         return new Promise((resolve) => {
-          resolvePoll1 = resolve;
+          resolvePendiente = resolve;
         });
       }
       return Promise.resolve(okOrders([]));
@@ -540,7 +629,7 @@ test('a poll started before a mark-Pagada confirms does not let the order reappe
   store.setState((s) => actions.pollSucceeded(s, { orders: [{ order_id: 'A' }], seq: 0, at: 0 }));
 
   startPolling(ctx);
-  assert.equal(callCount, 1);
+  assert.equal(pendienteCallCount, 1, 'first poll tick fires the Pendiente leg immediately');
 
   markPaid(ctx, 'A');
   const runner = startPaymentRunner(ctx);
@@ -551,7 +640,7 @@ test('a poll started before a mark-Pagada confirms does not let the order reappe
   const confirmedEntry = store.getState().payment.pending.find((p) => p.order_id === 'A');
   assert.notEqual(confirmedEntry.confirmedAtSeq, null);
 
-  resolvePoll1(okOrders([{ order_id: 'A' }]));
+  resolvePendiente(okOrders([{ order_id: 'A' }]));
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
@@ -619,6 +708,7 @@ test('sync: poll UNKNOWN_ACTION/INVALID_JSON/VALIDATION_ERROR -> sync.contract',
 // events by main.js in K3) ------------------------------------------------
 
 test('pollNow: fires an immediate poll bypassing the scheduled timer, only if none is in flight', async () => {
+  // 2 getCajaOrders calls per tick (Pendiente + Pagada).
   let getCajaOrdersCalls = 0;
   const api = { getCajaOrders: () => { getCajaOrdersCalls++; return Promise.resolve(okOrders([])); } };
   const { ctx, timers } = makeCtx({ api });
@@ -626,39 +716,39 @@ test('pollNow: fires an immediate poll bypassing the scheduled timer, only if no
   startPolling(ctx);
   await Promise.resolve();
   await Promise.resolve();
-  assert.equal(getCajaOrdersCalls, 1);
+  assert.equal(getCajaOrdersCalls, 2);
 
   pollNow(ctx);
   await Promise.resolve();
   await Promise.resolve();
-  assert.equal(getCajaOrdersCalls, 2, 'pollNow triggers an immediate poll');
+  assert.equal(getCajaOrdersCalls, 4, 'pollNow triggers an immediate poll tick');
 
   timers.advance(POLL_INTERVAL_MS);
   await Promise.resolve();
   await Promise.resolve();
-  assert.equal(getCajaOrdersCalls, 3, 'the scheduled timer from the pollNow-triggered poll still fires once');
+  assert.equal(getCajaOrdersCalls, 6, 'the scheduled timer from the pollNow-triggered tick still fires once');
 });
 
 test('pollNow: ignored while a poll is already in flight', async () => {
   let getCajaOrdersCalls = 0;
-  let resolveSlow;
+  let resolvers = [];
   const api = {
     getCajaOrders: () => {
       getCajaOrdersCalls++;
       return new Promise((resolve) => {
-        resolveSlow = resolve;
+        resolvers.push(resolve);
       });
     },
   };
   const { ctx } = makeCtx({ api });
 
   startPolling(ctx);
-  assert.equal(getCajaOrdersCalls, 1);
+  assert.equal(getCajaOrdersCalls, 2, 'first tick fires both concurrent calls immediately');
 
   pollNow(ctx);
-  assert.equal(getCajaOrdersCalls, 1, 'pollNow ignored while in flight');
+  assert.equal(getCajaOrdersCalls, 2, 'pollNow ignored while in flight');
 
-  resolveSlow(okOrders([]));
+  resolvers.forEach((resolve) => resolve(okOrders([])));
   await Promise.resolve();
   await Promise.resolve();
 });
@@ -685,7 +775,7 @@ test('unlock: success stores the PIN, unlocks, and starts polling', async () => 
   assert.equal(store.getState().auth.status, 'unlocked');
   assert.equal(ctx.pinStorage.getItem('foodc.caja.pin'), '123456');
   await Promise.resolve();
-  assert.equal(getCajaOrdersCalls, 1, 'polling starts after a successful unlock');
+  assert.equal(getCajaOrdersCalls, 2, 'polling starts after a successful unlock (Pendiente + Pagada)');
 });
 
 test('unlock: UNAUTHORIZED shows wrong_pin and does not store a PIN', async () => {

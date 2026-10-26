@@ -67,6 +67,42 @@ function mapPollFailureKind(result) {
   return 'transient'; // ambiguous
 }
 
+/**
+ * Severity rank for one half of the dual-fetch poll (`Pendiente` +
+ * `Pagada`), lower = more specific/higher priority. Mirrors the existing
+ * single-fetch priority this poll already applied before the dual fetch:
+ * a relock-triggering UNAUTHORIZED outranks PIN_NOT_CONFIGURED, which
+ * outranks a contract-bug code, which outranks everything else
+ * (transient/ambiguous). Only used to pick ONE failure to report when both
+ * concurrent `getCajaOrders` calls fail differently — this tie-break isn't
+ * further specified by the task, so it reuses the poll's own existing
+ * priority order instead of inventing a new one.
+ *
+ * @param {import('./api.js').ApiResult} result
+ * @returns {0|1|2|3}
+ */
+function pollFailureRank(result) {
+  if (isRelock(result)) return 0;
+  if (result.kind === 'definitive' && result.code === 'PIN_NOT_CONFIGURED') return 1;
+  if (result.kind === 'definitive' && POLL_CONTRACT_ERROR_CODES.has(result.code)) return 2;
+  return 3;
+}
+
+/**
+ * Picks which of the two concurrent `getCajaOrders` results to report when
+ * at least one of them did not succeed: the single failing one, or (when
+ * both failed and differ) the more specific one per `pollFailureRank`.
+ *
+ * @param {import('./api.js').ApiResult} pendienteResult
+ * @param {import('./api.js').ApiResult} pagadaResult
+ * @returns {import('./api.js').ApiResult}
+ */
+function pickPollFailure(pendienteResult, pagadaResult) {
+  const failures = [pendienteResult, pagadaResult].filter((r) => r.kind !== 'success');
+  if (failures.length === 1) return failures[0];
+  return pollFailureRank(failures[0]) <= pollFailureRank(failures[1]) ? failures[0] : failures[1];
+}
+
 // --- re-lock ----------------------------------------------------------
 
 /**
@@ -163,23 +199,35 @@ export function startPolling(ctx) {
     }
 
     poll.inFlight = true;
-    const result = await ctx.api.getCajaOrders();
+    // Dual fetch: the main queue shows both unpaid and already-paid orders
+    // together (`caja-order-prepay` scope item 2), so one poll tick now
+    // issues both concurrently and merges them. The tick is a success only
+    // if BOTH resolve `kind:'success'` — if either fails, the whole tick
+    // fails via the existing classify/reschedule path, reporting whichever
+    // of the two failures is more specific (see `pickPollFailure`).
+    const [pendienteResult, pagadaResult] = await Promise.all([
+      ctx.api.getCajaOrders('Pendiente'),
+      ctx.api.getCajaOrders('Pagada'),
+    ]);
     poll.inFlight = false;
 
     if (!poll.running) return; // stopped (e.g. relocked) while this poll was in flight
 
-    if (result.kind === 'success') {
-      ctx.store.setState((s) => actions.pollSucceeded(s, { orders: result.data, seq, at: ctx.now() }));
+    if (pendienteResult.kind === 'success' && pagadaResult.kind === 'success') {
+      const orders = [...pendienteResult.data, ...pagadaResult.data];
+      ctx.store.setState((s) => actions.pollSucceeded(s, { orders, seq, at: ctx.now() }));
       scheduleNext();
       return;
     }
 
-    if (isRelock(result)) {
+    const failure = pickPollFailure(pendienteResult, pagadaResult);
+
+    if (isRelock(failure)) {
       relock(ctx, 'rejected');
       return; // no reschedule
     }
 
-    const kind = mapPollFailureKind(result);
+    const kind = mapPollFailureKind(failure);
     ctx.store.setState((s) => actions.pollFailed(s, { kind, at: ctx.now() }));
     // The 60 s stale escalation has no timer of its own: it piggybacks on
     // this 10 s poll cadence.

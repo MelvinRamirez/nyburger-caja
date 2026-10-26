@@ -28,7 +28,7 @@ export const messages = {
   queue: {
     allTables: 'Todas',
     tableButton: (table) => `Mesa ${table}`,
-    tableTotal: (total) => `Total mesa: ${total.toFixed(2)}`,
+    tableTotal: (total) => `Total mesa: L${total.toFixed(2)}`,
     // Shown when tableTotal(orders).isComplete is false (same posture as
     // close.confirmSummaryUnavailable: flag the total rather than present
     // it as exact).
@@ -36,6 +36,11 @@ export const messages = {
   },
   payment: {
     payButton: 'Pagada',
+    // `caja-order-prepay`: the small paid-badge shown on an already-paid
+    // card INSTEAD of payButton (never renders both). Deliberately a
+    // separate key from payButton even though the text is the same today —
+    // they serve different roles (an action vs. a status) and may diverge.
+    paidBadge: '✓ Pagada',
     // Mark-Pagada Recovery Policy outcomes, ver caja-payment-queue spec.
     // ok:true / NOT_FOUND -> confirmado o descartado (tombstone): la tarjeta ya desapareció, sin texto adicional.
     // UNAUTHORIZED -> re-lock; el pago pendiente se conserva y el runner se pausa hasta
@@ -46,6 +51,13 @@ export const messages = {
     restoredNotice: (tableNumber) =>
       `El pedido de la Mesa ${tableNumber} no se pudo marcar como pagada y volvió a la lista.`,
     restoredDismiss: 'Entendido',
+  },
+  // `caja-order-prepay`: kitchen-status indicator shown next to the table
+  // number/timer on an already-paid card, so the cashier can see at a
+  // glance whether a prepaid order is still cooking.
+  kitchenStatus: {
+    pending: 'En cocina',
+    done: 'Lista',
   },
   close: {
     openButton: 'Cerrar día',

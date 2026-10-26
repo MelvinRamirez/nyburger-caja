@@ -139,15 +139,15 @@ export function createCajaApiClient({
     return post({ action: 'verifyCajaPin', pin }, verify, validateVerifyCajaPinData);
   }
 
-  async function getCajaOrders(status) {
+  async function getCajaOrders(paymentStatus) {
     const storedPin = getPin();
     if (storedPin === null) {
       return LOCAL_UNAUTHORIZED;
     }
     const body =
-      status === undefined
+      paymentStatus === undefined
         ? { action: 'getCajaOrders', pin: storedPin }
-        : { action: 'getCajaOrders', status, pin: storedPin };
+        : { action: 'getCajaOrders', payment_status: paymentStatus, pin: storedPin };
     return post(body, poll, validateGetCajaOrdersData);
   }
 

@@ -61,7 +61,7 @@ test('getCajaOrders never puts the PIN in the request URL, for any pin value', a
 
   for (const pin of ['123456', null, '000000000000', '']) {
     const client = makeClient({ fetchImpl, getPin: () => pin });
-    await client.getCajaOrders('Completado');
+    await client.getCajaOrders('Pendiente');
   }
 
   // getPin()===null short-circuits with zero fetch calls (see dedicated
@@ -201,7 +201,7 @@ test('getCajaOrders sends the exact fixed POST transport options and body, defau
   });
 });
 
-test('getCajaOrders sends an explicit status when provided (e.g. "Pagada")', async () => {
+test('getCajaOrders sends an explicit payment_status when provided (e.g. "Pagada")', async () => {
   const calls = [];
   const fetchImpl = async (url, options) => {
     calls.push({ url, options });
@@ -213,7 +213,7 @@ test('getCajaOrders sends an explicit status when provided (e.g. "Pagada")', asy
 
   assert.deepStrictEqual(JSON.parse(calls[0].options.body), {
     action: 'getCajaOrders',
-    status: 'Pagada',
+    payment_status: 'Pagada',
     pin: '654321',
   });
 });

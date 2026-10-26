@@ -130,7 +130,8 @@ function toFiniteNumber(v) {
  * @param {object} order
  * @returns {{ id: string, table: string, updatedAtMs: number|null,
  *   items: {name: string, quantity: number}[]|null, summaryText: string|null,
- *   notes: string|null, totalAmount: number|null }}
+ *   notes: string|null, totalAmount: number|null, paymentStatus: string|null,
+ *   kitchenStatus: string|null }}
  */
 export function toCardModel(order) {
   // Caja cards show elapsed time since `updated_at` (the moment an order
@@ -164,5 +165,10 @@ export function toCardModel(order) {
     summaryText,
     notes,
     totalAmount,
+    // Plain passthrough of the two fields the backend now always sends on
+    // every order (`caja-order-prepay`): no extra validation here, same
+    // posture as the rest of this function's non-shape-critical fields.
+    paymentStatus: order.payment_status,
+    kitchenStatus: order.status,
   };
 }
